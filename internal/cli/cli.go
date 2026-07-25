@@ -51,6 +51,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, version strin
 		return runInit(rest, io)
 	case "doctor":
 		return runDoctor(rest, io)
+	case "connect":
+		return runConnect(rest, io)
 	case "sessions":
 		return runSessions(rest, io)
 	case "version", "--version", "-v":
@@ -68,6 +70,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, version strin
 
 type runOptions struct {
 	root             string
+	connection       string
 	model            string
 	baseURL          string
 	apiKeyEnv        string
@@ -92,6 +95,7 @@ func prepareRunFlags(name string, args []string, stderr io.Writer) (*flag.FlagSe
 	}
 	options := &runOptions{
 		root:             root,
+		connection:       cfg.Provider.Connection,
 		model:            cfg.Provider.Model,
 		baseURL:          cfg.Provider.BaseURL,
 		apiKeyEnv:        cfg.Provider.APIKeyEnv,
@@ -107,6 +111,7 @@ func prepareRunFlags(name string, args []string, stderr io.Writer) (*flag.FlagSe
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&options.root, "root", options.root, "workspace root")
+	flags.StringVar(&options.connection, "connection", options.connection, "api or local")
 	flags.StringVar(&options.model, "model", options.model, "provider model")
 	flags.StringVar(&options.baseURL, "base-url", options.baseURL, "OpenAI-compatible API base URL")
 	flags.StringVar(&options.apiKeyEnv, "api-key-env", options.apiKeyEnv, "environment variable containing the API key")
@@ -259,7 +264,7 @@ func buildAgent(cfg config.Config, options *runOptions, approver tools.Approver,
 	}
 	options.root = absolute
 	key := cfg.APIKey()
-	if key == "" && requiresKey(options.baseURL) {
+	if options.connection == "api" && key == "" && requiresKey(options.baseURL) {
 		return nil, fmt.Errorf("no API key found; set YCODE_API_KEY or %s", options.apiKeyEnv)
 	}
 	if key != "" && !secureForCredential(options.baseURL) {
@@ -309,6 +314,7 @@ func buildAgent(cfg config.Config, options *runOptions, approver tools.Approver,
 }
 
 func applyRunOptions(cfg config.Config, options *runOptions) config.Config {
+	cfg.Provider.Connection = options.connection
 	cfg.Provider.BaseURL = options.baseURL
 	cfg.Provider.Model = options.model
 	cfg.Provider.APIKeyEnv = options.apiKeyEnv
@@ -520,6 +526,9 @@ Usage:
   ycode chat [flags]                 interactive agent
   ycode map [flags] [query]          preview query-ranked context
   ycode benchmark [flags] [query]    measure repository-context reduction
+  ycode connect local [flags]        detect and save a local model runtime
+  ycode connect api [flags]          save a hosted API connection
+  ycode connect status               show the effective model connection
   ycode init [flags]                 create project config and YCODE.md
   ycode doctor [flags]               verify local setup
   ycode sessions [--root PATH]       list resumable sessions
@@ -527,6 +536,7 @@ Usage:
 
 Common agent flags:
   --root PATH              workspace root
+  --connection MODE        api or local
   --model ID               provider model
   --base-url URL           OpenAI-compatible API base
   --budget TOKENS          per-call input budget

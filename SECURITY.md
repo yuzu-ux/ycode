@@ -84,3 +84,10 @@ Anyone with access to the user's account may still be able to read them.
 The configured provider receives the bounded prompt, repository map, selected
 file contents returned by tools, and conversation history. YCode does not send
 telemetry. `doctor` makes no network request unless `--network` is passed.
+Provider and discovery requests do not follow HTTP redirects.
+
+`local` connection mode accepts only loopback endpoints and never reads or sends
+an API key. Local discovery is opt-in through `ycode connect local` and performs
+only `GET /v1/models` requests against known loopback ports. The selected local
+runtime still receives model context, but that traffic does not leave the
+machine through YCode.

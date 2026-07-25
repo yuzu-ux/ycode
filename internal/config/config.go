@@ -2,14 +2,17 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -17,6 +20,7 @@ import (
 const projectConfigPath = ".ycode/config.json"
 
 type Provider struct {
+	Connection     string `json:"connection"`
 	BaseURL        string `json:"base_url"`
 	Model          string `json:"model"`
 	APIKeyEnv      string `json:"api_key_env"`
@@ -46,6 +50,7 @@ type Sources struct {
 func Default() Config {
 	return Config{
 		Provider: Provider{
+			Connection:     "api",
 			BaseURL:        "https://api.openai.com/v1",
 			Model:          "gpt-4.1-mini",
 			APIKeyEnv:      "OPENAI_API_KEY",
@@ -110,16 +115,25 @@ func globalPath() (string, error) {
 }
 
 func decodeIfPresent(path string, target *Config) error {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
-	decoder := json.NewDecoder(file)
+	var fields struct {
+		Provider *struct {
+			Connection *string `json:"connection"`
+			BaseURL    *string `json:"base_url"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
@@ -131,10 +145,18 @@ func decodeIfPresent(path string, target *Config) error {
 		}
 		return err
 	}
+	if fields.Provider != nil && fields.Provider.Connection == nil && fields.Provider.BaseURL != nil {
+		if parsed, err := url.Parse(strings.TrimSpace(*fields.Provider.BaseURL)); err == nil && loopbackHost(parsed.Hostname()) {
+			target.Provider.Connection = "local"
+		} else {
+			target.Provider.Connection = "api"
+		}
+	}
 	return nil
 }
 
 func applyEnvironment(cfg *Config) {
+	stringOverride("YCODE_CONNECTION", &cfg.Provider.Connection)
 	stringOverride("YCODE_BASE_URL", &cfg.Provider.BaseURL)
 	stringOverride("YCODE_MODEL", &cfg.Provider.Model)
 	stringOverride("YCODE_API_KEY_ENV", &cfg.Provider.APIKeyEnv)
@@ -173,6 +195,15 @@ func (cfg Config) Validate() error {
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return fmt.Errorf("provider.base_url must be an http(s) URL")
 	}
+	switch cfg.Provider.Connection {
+	case "api":
+	case "local":
+		if !loopbackHost(parsed.Hostname()) {
+			return errors.New("provider.base_url must use loopback for a local connection")
+		}
+	default:
+		return errors.New("provider.connection must be api or local")
+	}
 	if strings.TrimSpace(cfg.Provider.Model) == "" {
 		return errors.New("provider.model cannot be empty")
 	}
@@ -208,10 +239,91 @@ func (cfg Config) Validate() error {
 // APIKey resolves the configured key at call time. YCODE_API_KEY is a
 // convenient universal override, while APIKeyEnv supports provider-native names.
 func (cfg Config) APIKey() string {
+	if cfg.Provider.Connection == "local" {
+		return ""
+	}
 	if key := strings.TrimSpace(os.Getenv("YCODE_API_KEY")); key != "" {
 		return key
 	}
 	return strings.TrimSpace(os.Getenv(cfg.Provider.APIKeyEnv))
+}
+
+func loopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// WriteGlobalConnection saves non-secret connection metadata while preserving
+// existing global agent settings. API key values are never accepted or written.
+func WriteGlobalConnection(connection, baseURL, model, apiKeyEnv string) (string, error) {
+	path, err := globalPath()
+	if err != nil {
+		return "", err
+	}
+
+	cfg := Default()
+	if err := decodeIfPresent(path, &cfg); err != nil {
+		return "", fmt.Errorf("global config: %w", err)
+	}
+	cfg.Provider.Connection = strings.TrimSpace(connection)
+	cfg.Provider.BaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	cfg.Provider.Model = strings.TrimSpace(model)
+	if strings.TrimSpace(apiKeyEnv) != "" {
+		cfg.Provider.APIKeyEnv = strings.TrimSpace(apiKeyEnv)
+	}
+	if err := cfg.Validate(); err != nil {
+		return "", err
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	data = append(data, '\n')
+	if err := writePrivateAtomic(path, data); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func writePrivateAtomic(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".ycode-config-*")
+	if err != nil {
+		return err
+	}
+	tempPath := file.Name()
+	defer os.Remove(tempPath)
+
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil && runtime.GOOS == "windows" {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return err
+		}
+		return os.Rename(tempPath, path)
+	} else {
+		return err
+	}
 }
 
 // WriteProjectTemplate creates a non-secret project configuration.

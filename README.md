@@ -9,7 +9,7 @@
 </div>
 
 > [!IMPORTANT]
-> YCode is an early v0.1 foundation. It is useful today for OpenAI-compatible
+> YCode is an early pre-1.0 foundation. It is useful today for OpenAI-compatible
 > coding-agent workflows, but some advanced integrations are still on the
 > roadmap.
 
@@ -55,13 +55,50 @@ go install github.com/yuzu-ux/ycode/cmd/ycode@latest
 
 ## Getting started
 
-YCode needs an OpenAI-compatible model endpoint. After installing:
+YCode works with local models or a hosted API.
+
+### Local connection — no API key
+
+Start a local server and load a tool-capable model, then let YCode detect it:
 
 ```bash
+ycode connect local
+ycode "explain this repository"
+```
 
+YCode checks [Ollama](https://docs.ollama.com/api/openai-compatibility),
+[LM Studio](https://lmstudio.ai/docs/developer/openai-compat/tools), and
+[llama.cpp](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+It saves the selected endpoint and model in your user config. Local mode accepts
+only loopback addresses and disables API keys, even if a key exists in your
+environment. Discovery only lists installed models; inference does not begin
+until you send YCode a prompt. When several models are plausible, YCode asks you
+to choose instead of guessing which workload your computer should run.
+
+Choose a specific runtime or installed model:
+
+```bash
+ycode connect local --runtime ollama --model "<installed-model>"
+```
+
+Use a custom loopback server:
+
+```bash
+ycode connect local --base-url http://127.0.0.1:9000/v1
+```
+
+### Hosted API
+
+The default connection uses OpenAI's `gpt-4.1-mini`:
+
+```bash
+ycode connect api
 export OPENAI_API_KEY="..."
 ycode "explain this repository"
 ```
+
+Local inference uses your computer's CPU/GPU and memory. Switch back to the
+hosted connection at any time with `ycode connect api`.
 
 Interactive mode:
 
@@ -79,24 +116,15 @@ make install
 ```
 
 YCode defaults to OpenAI's `gpt-4.1-mini`, but every provider setting is
-configurable. For a local OpenAI-compatible server:
-
-```bash
-ycode run \
-  --base-url http://localhost:11434/v1 \
-  --model "<your-local-model>" \
-  "find the bug in this project"
-```
-
-For another hosted OpenAI-compatible provider:
+configurable. For another hosted OpenAI-compatible provider:
 
 ```bash
 export OPENROUTER_API_KEY="..."
-ycode run \
+ycode connect api \
   --base-url https://openrouter.ai/api/v1 \
   --api-key-env OPENROUTER_API_KEY \
-  --model "<provider/model>" \
-  "add tests for the parser"
+  --model "<provider/model>"
+ycode "add tests for the parser"
 ```
 
 YCode never writes the key to its config or session files.
@@ -108,6 +136,9 @@ ycode                              interactive chat
 ycode "fix the failing test"       one-shot shorthand
 ycode run [flags] <prompt>         one-shot agent
 ycode chat [flags]                 interactive agent
+ycode connect local [flags]        detect and save a local model connection
+ycode connect api [flags]          save a hosted API connection
+ycode connect status               show the effective model connection
 ycode map [flags] [query]          preview the context sent for a task
 ycode benchmark [flags] [query]    measure context reduction locally
 ycode init                         create .ycode/config.json and YCODE.md
@@ -119,6 +150,7 @@ Useful flags:
 
 ```text
 --root PATH
+--connection api|local
 --model ID
 --base-url URL
 --budget TOKENS
@@ -147,6 +179,7 @@ Run `ycode init` inside a project, then edit `.ycode/config.json`:
 ```json
 {
   "provider": {
+    "connection": "api",
     "base_url": "https://api.openai.com/v1",
     "model": "gpt-4.1-mini",
     "api_key_env": "OPENAI_API_KEY",
@@ -187,7 +220,7 @@ override those two operating-system locations.
 flowchart LR
     U["User request"] --> M["Query-ranked repo map"]
     M --> B["Hard context budget"]
-    B --> P["OpenAI-compatible provider"]
+    B --> P["Local runtime or hosted API"]
     P --> T["Two compact tools"]
     T --> D["Clip and deduplicate results"]
     D --> B
@@ -215,9 +248,10 @@ Read [SECURITY.md](SECURITY.md) before using `--shell-policy allow`.
 
 ## Design scope
 
-YCode v0.1 deliberately keeps its default path focused. It currently provides:
+YCode deliberately keeps its default path focused. It currently provides:
 
 - OpenAI-compatible streaming chat completions and function calls
+- keyless local runtime discovery for Ollama, LM Studio, and llama.cpp
 - bounded repository context
 - a safe editing/search tool
 - a policy-controlled shell tool
