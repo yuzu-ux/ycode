@@ -37,3 +37,41 @@ jobs:
           ./bin/ycode version
           ./bin/ycode map --tokens 300 "provider streaming"
           ./bin/ycode benchmark --map-tokens 300 "provider streaming"
+
+      - name: Validate release packages and Unix installer
+        run: |
+          ./scripts/build-release.sh v0.0.0-ci
+          YCODE_RELEASE_BASE_URL="file://$PWD/dist" \
+            YCODE_INSTALL_DIR="$RUNNER_TEMP/ycode-bin" \
+            ./install.sh
+          "$RUNNER_TEMP/ycode-bin/ycode" version | grep "0.0.0-ci"
+
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build installer fixture
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist, fixture | Out-Null
+          go build -trimpath -ldflags "-s -w -X main.version=0.0.0-ci" -o fixture/ycode.exe ./cmd/ycode
+          Compress-Archive -Path fixture/ycode.exe -DestinationPath dist/ycode-windows-amd64.zip
+          $hash = (Get-FileHash dist/ycode-windows-amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  ycode-windows-amd64.zip" | Set-Content -Encoding ascii dist/SHA256SUMS
+
+      - name: Validate Windows installer
+        shell: pwsh
+        run: |
+          $dist = (Resolve-Path dist).Path + [IO.Path]::DirectorySeparatorChar
+          $env:YCODE_RELEASE_BASE_URL = ([Uri]$dist).AbsoluteUri.TrimEnd("/")
+          $env:YCODE_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "ycode-bin"
+          & ./install.ps1
+          & (Join-Path $env:YCODE_INSTALL_DIR "ycode.exe") version | Select-String "0.0.0-ci"

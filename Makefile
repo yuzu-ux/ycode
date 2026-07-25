@@ -15,7 +15,8 @@ check:
 	@test -z "$$(gofmt -l .)"
 	$(GO) vet ./...
 	$(GO) test -race ./...
-	$(GO) build -trimpath -ldflags "$(LDFLAGS)" ./cmd/ycode
+	@mkdir -p bin
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/ycode ./cmd/ycode
 
 install:
 	$(GO) install -trimpath -ldflags "$(LDFLAGS)" ./cmd/ycode
