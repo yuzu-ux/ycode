@@ -10,8 +10,8 @@
 
 > [!IMPORTANT]
 > YCode is an early v0.1 foundation. It is useful today for OpenAI-compatible
-> coding-agent workflows, but it is not yet feature-compatible with mature
-> harnesses such as JCode.
+> coding-agent workflows, but some advanced integrations are still on the
+> roadmap.
 
 ## Why YCode
 
@@ -29,12 +29,35 @@ The runtime is one Go binary with no third-party runtime dependencies. Startup,
 repository mapping, session storage, streaming, and tool execution all use the
 standard library.
 
-## Getting started
+## Install
 
-Requirements: Go 1.24 or newer and an OpenAI-compatible model endpoint.
+macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yuzu-ux/ycode/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/yuzu-ux/ycode/main/install.ps1 | iex
+```
+
+The installers download the correct release binary, verify its SHA-256
+checksum, and install it in a user-owned bin directory. To choose another
+directory, set `YCODE_INSTALL_DIR` before running the installer.
+
+You can also install from source with Go 1.24 or newer:
 
 ```bash
 go install github.com/yuzu-ux/ycode/cmd/ycode@latest
+```
+
+## Getting started
+
+YCode needs an OpenAI-compatible model endpoint. After installing:
+
+```bash
 
 export OPENAI_API_KEY="..."
 ycode "explain this repository"
@@ -192,7 +215,7 @@ Read [SECURITY.md](SECURITY.md) before using `--shell-policy allow`.
 
 ## Design scope
 
-YCode v0.1 is intentionally smaller than JCode. It currently provides:
+YCode v0.1 deliberately keeps its default path focused. It currently provides:
 
 - OpenAI-compatible streaming chat completions and function calls
 - bounded repository context
@@ -205,14 +228,6 @@ YCode v0.1 is intentionally smaller than JCode. It currently provides:
 It does not yet provide OAuth login, a full-screen TUI, MCP, native
 Anthropic/Gemini protocols, browser automation, swarms, or semantic memory.
 Those are tracked in the [roadmap](docs/ROADMAP.md).
-
-## Inspiration
-
-YCode is an independent implementation inspired by Jeremy Huang's
-[JCode](https://github.com/1jehuang/jcode), especially its focus on performance
-and agent-harness ergonomics. No JCode source code is vendored into this
-repository. Thanks to the JCode project for showing how ambitious a terminal
-agent can be.
 
 ## License
 

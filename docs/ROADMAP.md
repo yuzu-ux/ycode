@@ -1,8 +1,7 @@
 # Roadmap
 
-YCode's goal is not to clone every JCode feature. It aims to be the smallest
-serious harness for developers who care about latency, token cost, and auditable
-execution.
+YCode aims to be the smallest serious harness for developers who care about
+latency, token cost, and auditable execution.
 
 ## v0.1 — foundation
 
@@ -15,6 +14,7 @@ execution.
 - [x] safe workspace editing and shell policies
 - [x] resumable private local sessions
 - [x] local context-reduction benchmark
+- [x] checksum-verified macOS, Linux, and Windows installers
 
 ## v0.2 — compatibility and precision
 
