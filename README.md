@@ -9,9 +9,9 @@
 </div>
 
 > [!IMPORTANT]
-> YCode is an early pre-1.0 foundation. It is useful today for OpenAI-compatible
-> coding-agent workflows, but some advanced integrations are still on the
-> roadmap.
+> YCode is an early pre-1.0 foundation. It supports installed coding CLIs,
+> keyless local models, and hosted OpenAI-compatible APIs. Some advanced
+> integrations are still on the roadmap.
 
 ## Why YCode
 
@@ -24,6 +24,7 @@ an architectural constraint:
 - **Content-addressed results** — repeated tool output becomes a short reference; oversized output keeps its useful head and tail.
 - **Stable prompt prefix** — static instructions stay before dynamic workspace context to improve provider cache reuse.
 - **Visible accounting** — `--stats` reports estimated input, output, avoided tokens, map size, and dropped turns.
+- **Lean CLI handoff** — delegates directly to Codex, Claude Code, or OpenCode without wrapping them in a second agent loop.
 
 The runtime is one Go binary with no third-party runtime dependencies. Startup,
 repository mapping, session storage, streaming, and tool execution all use the
@@ -55,7 +56,50 @@ go install github.com/yuzu-ux/ycode/cmd/ycode@latest
 
 ## Getting started
 
-YCode works with local models or a hosted API.
+Start with the guided setup:
+
+```bash
+ycode setup
+```
+
+It detects installed coding CLIs and local model servers without sending a
+model request. Choose an existing CLI login, a local LLM, or a hosted API. If
+you run `ycode` with no saved connection, this setup opens automatically in an
+interactive terminal.
+
+### Installed coding CLI — no YCode API key
+
+YCode can delegate straight to any supported CLI already installed and logged
+in on your computer:
+
+```bash
+ycode connect cli codex
+ycode connect cli claude
+ycode connect cli opencode
+```
+
+See what is available:
+
+```bash
+ycode connect cli --list
+```
+
+The adapter uses each tool's supported non-interactive command:
+[`codex exec`](https://learn.chatgpt.com/docs/non-interactive-mode),
+[`claude --print`](https://code.claude.com/docs/en/cli-usage), or
+[`opencode run`](https://opencode.ai/docs/cli/). YCode stores only the CLI name,
+invokes it with an argv array rather than a shell string, and leaves
+authentication with that CLI. It also skips YCode's repo map, model prompt, and
+tool schemas on this path, avoiding duplicate context and tokens.
+
+Sign in with the selected CLI first. YCode removes credential-like environment
+variables from the delegated process so repository code cannot inherit your
+YCode/API secrets; the adapter therefore relies on the CLI's saved login.
+
+Normal runs allow workspace editing through the external CLI's documented
+permission mode. `--read-only` selects Codex's read-only sandbox, Claude's plan
+mode, or OpenCode's plan agent with edit/shell/external-directory denies.
+Existing tool configuration and explicit deny rules still apply.
 
 ### Local connection — no API key
 
@@ -72,8 +116,9 @@ YCode checks [Ollama](https://docs.ollama.com/api/openai-compatibility),
 It saves the selected endpoint and model in your user config. Local mode accepts
 only loopback addresses and disables API keys, even if a key exists in your
 environment. Discovery only lists installed models; inference does not begin
-until you send YCode a prompt. When several models are plausible, YCode asks you
-to choose instead of guessing which workload your computer should run.
+until you send YCode a prompt. When several models are plausible, an interactive
+terminal shows a numbered choice instead of guessing which large workload your
+computer should run.
 
 Choose a specific runtime or installed model:
 
@@ -97,8 +142,14 @@ export OPENAI_API_KEY="..."
 ycode "explain this repository"
 ```
 
-Local inference uses your computer's CPU/GPU and memory. Switch back to the
-hosted connection at any time with `ycode connect api`.
+Local inference uses your computer's CPU/GPU and memory. If that makes your Mac
+lag, stop the local model and switch to an installed CLI or hosted connection:
+
+```bash
+ycode connect cli codex
+# or
+ycode connect api
+```
 
 Interactive mode:
 
@@ -136,6 +187,9 @@ ycode                              interactive chat
 ycode "fix the failing test"       one-shot shorthand
 ycode run [flags] <prompt>         one-shot agent
 ycode chat [flags]                 interactive agent
+ycode setup                        guided connection setup
+ycode connect cli NAME             use Codex, Claude Code, or OpenCode
+ycode connect cli --list           list supported external CLIs
 ycode connect local [flags]        detect and save a local model connection
 ycode connect api [flags]          save a hosted API connection
 ycode connect status               show the effective model connection
@@ -150,7 +204,8 @@ Useful flags:
 
 ```text
 --root PATH
---connection api|local
+--connection api|local|cli
+--cli codex|claude|opencode
 --model ID
 --base-url URL
 --budget TOKENS
@@ -161,6 +216,10 @@ Useful flags:
 --resume latest|SESSION_ID
 --stats
 ```
+
+The animated status line and color banner appear only on a real terminal. They
+turn themselves off for redirected output and CI. Set `YCODE_NO_ANIMATION=1` or
+`NO_COLOR=1` to disable them explicitly.
 
 Try the zero-API-cost benchmark:
 
@@ -197,6 +256,10 @@ Run `ycode init` inside a project, then edit `.ycode/config.json`:
 }
 ```
 
+For an external CLI connection, the provider section also contains
+`"cli": "codex"` (or `claude` / `opencode`). No login token or API-key value is
+written.
+
 Precedence is:
 
 ```text
@@ -218,7 +281,9 @@ override those two operating-system locations.
 
 ```mermaid
 flowchart LR
-    U["User request"] --> M["Query-ranked repo map"]
+    U["User request"] --> C{"Connection"}
+    C -->|"CLI"| E["Codex / Claude Code / OpenCode"]
+    C -->|"Local or API"| M["Query-ranked repo map"]
     M --> B["Hard context budget"]
     B --> P["Local runtime or hosted API"]
     P --> T["Two compact tools"]
@@ -251,7 +316,9 @@ Read [SECURITY.md](SECURITY.md) before using `--shell-policy allow`.
 YCode deliberately keeps its default path focused. It currently provides:
 
 - OpenAI-compatible streaming chat completions and function calls
+- direct non-interactive adapters for Codex, Claude Code, and OpenCode
 - keyless local runtime discovery for Ollama, LM Studio, and llama.cpp
+- guided first-run setup and TTY-only status animation
 - bounded repository context
 - a safe editing/search tool
 - a policy-controlled shell tool
@@ -259,7 +326,7 @@ YCode deliberately keeps its default path focused. It currently provides:
 - interactive and non-interactive modes
 - token accounting and a context benchmark
 
-It does not yet provide OAuth login, a full-screen TUI, MCP, native
+It does not yet provide its own OAuth login, a full-screen TUI, MCP, native
 Anthropic/Gemini protocols, browser automation, swarms, or semantic memory.
 Those are tracked in the [roadmap](docs/ROADMAP.md).
 

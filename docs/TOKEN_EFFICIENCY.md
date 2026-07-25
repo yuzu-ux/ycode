@@ -2,6 +2,15 @@
 
 YCode treats model input as a budget, not a transcript dump.
 
+## External CLI handoff
+
+When `provider.connection` is `cli`, YCode does not wrap the external coding
+agent in its own model loop. It passes the user's prompt directly to the
+selected CLI and omits YCode's repository map, system prompt, tool schemas, and
+session replay. This avoids paying for the same workspace context twice.
+
+The remaining sections describe YCode's local and hosted provider loop.
+
 ## 1. Repository map instead of repository upload
 
 The mapper obtains Git-visible files when possible and falls back to a bounded

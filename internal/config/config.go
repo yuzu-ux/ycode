@@ -21,6 +21,7 @@ const projectConfigPath = ".ycode/config.json"
 
 type Provider struct {
 	Connection     string `json:"connection"`
+	CLI            string `json:"cli,omitempty"`
 	BaseURL        string `json:"base_url"`
 	Model          string `json:"model"`
 	APIKeyEnv      string `json:"api_key_env"`
@@ -157,6 +158,7 @@ func decodeIfPresent(path string, target *Config) error {
 
 func applyEnvironment(cfg *Config) {
 	stringOverride("YCODE_CONNECTION", &cfg.Provider.Connection)
+	stringOverride("YCODE_CLI", &cfg.Provider.CLI)
 	stringOverride("YCODE_BASE_URL", &cfg.Provider.BaseURL)
 	stringOverride("YCODE_MODEL", &cfg.Provider.Model)
 	stringOverride("YCODE_API_KEY_ENV", &cfg.Provider.APIKeyEnv)
@@ -191,20 +193,29 @@ func intOverride(name string, target *int) {
 var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (cfg Config) Validate() error {
-	parsed, err := url.Parse(cfg.Provider.BaseURL)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return fmt.Errorf("provider.base_url must be an http(s) URL")
-	}
 	switch cfg.Provider.Connection {
 	case "api":
+		if err := validateProviderURL(cfg.Provider.BaseURL); err != nil {
+			return err
+		}
 	case "local":
+		if err := validateProviderURL(cfg.Provider.BaseURL); err != nil {
+			return err
+		}
+		parsed, _ := url.Parse(cfg.Provider.BaseURL)
 		if !loopbackHost(parsed.Hostname()) {
 			return errors.New("provider.base_url must use loopback for a local connection")
 		}
+	case "cli":
+		switch normalizeCLIName(cfg.Provider.CLI) {
+		case "codex", "claude", "opencode":
+		default:
+			return errors.New("provider.cli must be codex, claude, or opencode for a cli connection")
+		}
 	default:
-		return errors.New("provider.connection must be api or local")
+		return errors.New("provider.connection must be api, local, or cli")
 	}
-	if strings.TrimSpace(cfg.Provider.Model) == "" {
+	if cfg.Provider.Connection != "cli" && strings.TrimSpace(cfg.Provider.Model) == "" {
 		return errors.New("provider.model cannot be empty")
 	}
 	if !environmentName.MatchString(cfg.Provider.APIKeyEnv) {
@@ -239,7 +250,7 @@ func (cfg Config) Validate() error {
 // APIKey resolves the configured key at call time. YCODE_API_KEY is a
 // convenient universal override, while APIKeyEnv supports provider-native names.
 func (cfg Config) APIKey() string {
-	if cfg.Provider.Connection == "local" {
+	if cfg.Provider.Connection == "local" || cfg.Provider.Connection == "cli" {
 		return ""
 	}
 	if key := strings.TrimSpace(os.Getenv("YCODE_API_KEY")); key != "" {
@@ -270,6 +281,7 @@ func WriteGlobalConnection(connection, baseURL, model, apiKeyEnv string) (string
 		return "", fmt.Errorf("global config: %w", err)
 	}
 	cfg.Provider.Connection = strings.TrimSpace(connection)
+	cfg.Provider.CLI = ""
 	cfg.Provider.BaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	cfg.Provider.Model = strings.TrimSpace(model)
 	if strings.TrimSpace(apiKeyEnv) != "" {
@@ -288,6 +300,57 @@ func WriteGlobalConnection(connection, baseURL, model, apiKeyEnv string) (string
 		return "", err
 	}
 	return path, nil
+}
+
+// WriteGlobalCLI selects an installed coding CLI without storing any of that
+// CLI's login or credential material.
+func WriteGlobalCLI(name string) (string, error) {
+	path, err := globalPath()
+	if err != nil {
+		return "", err
+	}
+
+	cfg := Default()
+	if err := decodeIfPresent(path, &cfg); err != nil {
+		return "", fmt.Errorf("global config: %w", err)
+	}
+	cfg.Provider.Connection = "cli"
+	cfg.Provider.CLI = normalizeCLIName(name)
+	if err := cfg.Validate(); err != nil {
+		return "", err
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	data = append(data, '\n')
+	if err := writePrivateAtomic(path, data); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func validateProviderURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("provider.base_url must be an http(s) URL")
+	}
+	return nil
+}
+
+func normalizeCLIName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "_", "-")
+	value = strings.ReplaceAll(value, " ", "-")
+	switch value {
+	case "claude-code":
+		return "claude"
+	case "open-code":
+		return "opencode"
+	default:
+		return value
+	}
 }
 
 func writePrivateAtomic(path string, data []byte) error {

@@ -29,6 +29,11 @@ type ToolRunner interface {
 	Execute(context.Context, provider.ToolCall) (string, error)
 }
 
+type Status interface {
+	Start(string)
+	Stop()
+}
+
 type Options struct {
 	Root             string
 	Model            string
@@ -44,6 +49,7 @@ type Options struct {
 	State            *session.State
 	Stdout           io.Writer
 	Progress         io.Writer
+	Status           Status
 }
 
 type Stats struct {
@@ -119,7 +125,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) error {
 	a.state.Messages = append(a.state.Messages, provider.Message{Role: "user", Content: prompt})
 
 	effectiveMapBudget := min(a.options.RepoMapTokens, max(200, a.options.InputBudget/3))
+	a.startStatus("Mapping workspace")
 	mapSnapshot, err := repo.Build(a.options.Root, prompt, effectiveMapBudget)
+	a.stopStatus()
 	if err != nil {
 		return fmt.Errorf("build repository map: %w", err)
 	}
@@ -142,12 +150,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) error {
 
 		wroteStream := false
 		onDelta := func(value string) {
+			a.stopStatus()
 			wroteStream = true
 			_, _ = io.WriteString(a.options.Stdout, textsafe.Terminal(value))
 		}
 		if !a.options.Stream {
 			onDelta = nil
 		}
+		a.startStatus("Thinking")
 		turn, err := a.options.Provider.Complete(ctx, provider.Request{
 			Model:       a.options.Model,
 			Messages:    messages,
@@ -156,6 +166,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) error {
 			Stream:      a.options.Stream,
 			OnTextDelta: onDelta,
 		})
+		a.stopStatus()
 		if err != nil {
 			a.save()
 			return err
@@ -206,6 +217,18 @@ func (a *Agent) Run(ctx context.Context, prompt string) error {
 		}
 	}
 	return fmt.Errorf("agent stopped after %d model turns; increase max_turns if the task is genuinely larger", a.options.MaxTurns)
+}
+
+func (a *Agent) startStatus(label string) {
+	if a.options.Status != nil {
+		a.options.Status.Start(label)
+	}
+}
+
+func (a *Agent) stopStatus() {
+	if a.options.Status != nil {
+		a.options.Status.Stop()
+	}
 }
 
 func (a *Agent) save() error {

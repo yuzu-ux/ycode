@@ -30,6 +30,9 @@ latency, token cost, and auditable execution.
 
 ## v0.3 — extensibility without core bloat
 
+- [x] guided setup with interactive local-model choice
+- [x] direct Codex, Claude Code, and OpenCode CLI adapters
+- [x] dependency-free TTY banner and status animation
 - [ ] MCP stdio client behind lazy schema loading
 - [ ] project-local skill files with explicit activation
 - [ ] on-demand browser tool adapter

@@ -12,17 +12,27 @@ and execution safety can be audited separately.
 | `internal/cli` | Commands, flags, interactive loop, setup diagnostics |
 | `internal/agent` | Provider/tool turn loop and cumulative statistics |
 | `internal/context` | Hard input budget and deterministic old-turn capsule |
+| `internal/externalcli` | Allowlisted argv adapters for installed coding CLIs |
 | `internal/repo` | Query-ranked, token-bounded repository map |
 | `internal/provider` | OpenAI-compatible JSON and SSE transport |
 | `internal/tools` | Workspace jail, atomic edits, search, and shell policy |
 | `internal/session` | Private, resumable, workspace-scoped local sessions |
 | `internal/token` | Estimation, clipping, hashes, and output deduplication |
+| `internal/ui` | TTY-only banner and dependency-free status spinner |
 
 Dependencies point inward toward small protocol types. The provider package does
 not know about the workspace, and the tools package does not know about the
 agent loop.
 
 ## Turn lifecycle
+
+External CLI connections take a short path: YCode resolves one allowlisted
+executable, constructs its documented non-interactive argv, sets the workspace
+as the child working directory, and connects the child's output directly to the
+terminal. It does not build a repository map, add a system prompt, send tool
+schemas, or create a second model session.
+
+Local and hosted provider connections use the bounded agent loop:
 
 1. The user request is appended to the full local session.
 2. The repository mapper ranks visible files against words in the request.
@@ -54,18 +64,41 @@ contract:
 - streaming, fragmented `delta.tool_calls`
 - optional provider usage accounting
 
-The provider has two explicit connection modes:
+The provider has three explicit connection modes:
 
 - `local` requires a loopback endpoint and suppresses API keys even when a key
   exists in the environment.
 - `api` supports hosted HTTPS endpoints and requires `YCODE_API_KEY` or the
   configured provider environment variable when the endpoint is not loopback.
+- `cli` stores only `codex`, `claude`, or `opencode`; authentication and model
+  selection remain owned by that installed CLI.
 
 `ycode connect local` discovers models through `GET /v1/models` on known local
 runtime ports, then stores only the connection mode, endpoint, and model ID.
 Discovery is on demand: it adds no background process, regular-startup work,
 resident memory, or model-request tokens. `ycode connect api` switches the
 saved mode without storing an API key value.
+
+`ycode setup` checks PATH and local `/models` endpoints only. It never starts a
+runtime or sends an inference request. When multiple local models are present,
+the terminal asks the user to select one before persisting the connection.
+
+## External CLI authority
+
+The external adapter never invokes a shell. It resolves one fixed executable
+name and passes the prompt as a single argv element:
+
+- Codex uses `exec --ephemeral` with `workspace-write`, or `read-only` for
+  `--read-only`.
+- Claude Code uses print mode without session persistence and chooses
+  `acceptEdits` or `plan`.
+- OpenCode uses `run --auto` for normal coding tasks. For `--read-only`, it
+  selects the `plan` agent and injects deny rules for edits, shell commands, and
+  external directories. Existing explicit deny rules remain authoritative.
+
+These modes can execute the external agent's own tools. Their authority is not
+reduced to YCode's two-tool registry, so users should review each CLI's own
+permission configuration.
 
 ## Editing contract
 
@@ -95,7 +128,7 @@ state.
 - daemon/server architecture
 - multi-agent scheduling
 - semantic embeddings
-- terminal rendering framework
+- full-screen terminal rendering framework
 - provider OAuth
 - arbitrary plugin execution
 

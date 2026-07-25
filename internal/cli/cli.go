@@ -17,11 +17,13 @@ import (
 
 	"github.com/yuzu-ux/ycode/internal/agent"
 	"github.com/yuzu-ux/ycode/internal/config"
+	"github.com/yuzu-ux/ycode/internal/externalcli"
 	"github.com/yuzu-ux/ycode/internal/provider"
 	"github.com/yuzu-ux/ycode/internal/repo"
 	"github.com/yuzu-ux/ycode/internal/session"
 	"github.com/yuzu-ux/ycode/internal/textsafe"
 	"github.com/yuzu-ux/ycode/internal/tools"
+	"github.com/yuzu-ux/ycode/internal/ui"
 )
 
 type streams struct {
@@ -53,6 +55,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, version strin
 		return runDoctor(rest, io)
 	case "connect":
 		return runConnect(rest, io)
+	case "setup":
+		return runSetup(rest, io)
 	case "sessions":
 		return runSessions(rest, io)
 	case "version", "--version", "-v":
@@ -71,6 +75,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, version strin
 type runOptions struct {
 	root             string
 	connection       string
+	externalCLI      string
 	model            string
 	baseURL          string
 	apiKeyEnv        string
@@ -96,6 +101,7 @@ func prepareRunFlags(name string, args []string, stderr io.Writer) (*flag.FlagSe
 	options := &runOptions{
 		root:             root,
 		connection:       cfg.Provider.Connection,
+		externalCLI:      cfg.Provider.CLI,
 		model:            cfg.Provider.Model,
 		baseURL:          cfg.Provider.BaseURL,
 		apiKeyEnv:        cfg.Provider.APIKeyEnv,
@@ -111,7 +117,8 @@ func prepareRunFlags(name string, args []string, stderr io.Writer) (*flag.FlagSe
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&options.root, "root", options.root, "workspace root")
-	flags.StringVar(&options.connection, "connection", options.connection, "api or local")
+	flags.StringVar(&options.connection, "connection", options.connection, "api, local, or cli")
+	flags.StringVar(&options.externalCLI, "cli", options.externalCLI, "external coding CLI: codex, claude, or opencode")
 	flags.StringVar(&options.model, "model", options.model, "provider model")
 	flags.StringVar(&options.baseURL, "base-url", options.baseURL, "OpenAI-compatible API base URL")
 	flags.StringVar(&options.apiKeyEnv, "api-key-env", options.apiKeyEnv, "environment variable containing the API key")
@@ -153,6 +160,20 @@ func runOnce(args []string, io streams) int {
 	if prompt == "" {
 		return fail(io.err, errors.New("missing prompt; try: ycode run \"explain this repository\""))
 	}
+	if needsCredentialSetup(cfg) && ui.InteractiveReader(io.in) && !hasProviderOverride(args) {
+		_, _ = fmt.Fprintln(io.err, "YCode needs a connection before the first run.")
+		if exit := runSetup(nil, io); exit != 0 {
+			return exit
+		}
+		cfg, _, err = config.Load(options.root)
+		if err != nil {
+			return fail(io.err, err)
+		}
+		loadProviderOptions(options, cfg)
+	}
+	if cfg.Provider.Connection == "cli" {
+		return runExternalPrompt(context.Background(), cfg, options, prompt, io)
+	}
 
 	runner, err := buildAgent(cfg, options, nil, io)
 	if err != nil {
@@ -182,6 +203,20 @@ func runChat(args []string, io streams) int {
 	if err := cfg.Validate(); err != nil {
 		return fail(io.err, err)
 	}
+	if needsCredentialSetup(cfg) && ui.InteractiveReader(io.in) && !hasProviderOverride(args) {
+		_, _ = fmt.Fprintln(io.err, "YCode needs a connection before the first chat.")
+		if exit := runSetup(nil, io); exit != 0 {
+			return exit
+		}
+		cfg, _, err = config.Load(options.root)
+		if err != nil {
+			return fail(io.err, err)
+		}
+		loadProviderOptions(options, cfg)
+	}
+	if cfg.Provider.Connection == "cli" {
+		return runExternalChat(cfg, options, io)
+	}
 
 	reader := bufio.NewReader(io.in)
 	approver := func(command, reason string) bool {
@@ -200,7 +235,7 @@ func runChat(args []string, io streams) int {
 		return fail(io.err, err)
 	}
 
-	_, _ = fmt.Fprintf(io.err, "YCode · %s · session %s\n", textsafe.Terminal(options.model), runner.SessionID())
+	ui.Banner(io.err, options.model, "session "+runner.SessionID())
 	_, _ = fmt.Fprintln(io.err, "Type /help for commands. Ctrl-D or /exit to leave.")
 	for {
 		_, _ = fmt.Fprint(io.err, "ycode › ")
@@ -265,7 +300,9 @@ func buildAgent(cfg config.Config, options *runOptions, approver tools.Approver,
 	options.root = absolute
 	key := cfg.APIKey()
 	if options.connection == "api" && key == "" && requiresKey(options.baseURL) {
-		return nil, fmt.Errorf("no API key found; set YCODE_API_KEY or %s", options.apiKeyEnv)
+		return nil, fmt.Errorf(
+			"no API key found; run `ycode setup` to use Codex, Claude Code, OpenCode, a local model, or a hosted API",
+		)
 	}
 	if key != "" && !secureForCredential(options.baseURL) {
 		return nil, errors.New("refusing to send an API key over non-loopback HTTP; use HTTPS or a loopback URL")
@@ -310,11 +347,13 @@ func buildAgent(cfg config.Config, options *runOptions, approver tools.Approver,
 		State:            state,
 		Stdout:           io.out,
 		Progress:         io.err,
+		Status:           ui.NewSpinner(io.err),
 	})
 }
 
 func applyRunOptions(cfg config.Config, options *runOptions) config.Config {
 	cfg.Provider.Connection = options.connection
+	cfg.Provider.CLI = externalcli.NormalizeName(options.externalCLI)
 	cfg.Provider.BaseURL = options.baseURL
 	cfg.Provider.Model = options.model
 	cfg.Provider.APIKeyEnv = options.apiKeyEnv
@@ -327,6 +366,96 @@ func applyRunOptions(cfg config.Config, options *runOptions) config.Config {
 	cfg.Agent.MaxTurns = options.maxTurns
 	cfg.Agent.ShellPolicy = options.shellPolicy
 	return cfg
+}
+
+func loadProviderOptions(options *runOptions, cfg config.Config) {
+	options.connection = cfg.Provider.Connection
+	options.externalCLI = cfg.Provider.CLI
+	options.baseURL = cfg.Provider.BaseURL
+	options.model = cfg.Provider.Model
+	options.apiKeyEnv = cfg.Provider.APIKeyEnv
+	options.timeoutSeconds = cfg.Provider.TimeoutSeconds
+	options.stream = cfg.Provider.Stream
+}
+
+func hasProviderOverride(args []string) bool {
+	for _, name := range []string{"connection", "cli", "model", "base-url", "api-key-env"} {
+		long := "--" + name
+		for _, value := range args {
+			if value == long || strings.HasPrefix(value, long+"=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func runExternalPrompt(ctx context.Context, cfg config.Config, options *runOptions, prompt string, io streams) int {
+	absolute, err := filepath.Abs(options.root)
+	if err != nil {
+		return fail(io.err, err)
+	}
+	spinner := ui.NewSpinner(io.err)
+	spinner.Start("Starting " + externalcli.DisplayName(cfg.Provider.CLI))
+	err = externalcli.Run(ctx, externalcli.Options{
+		Name:     cfg.Provider.CLI,
+		Root:     absolute,
+		Prompt:   prompt,
+		ReadOnly: options.readOnly,
+		Stdout:   io.out,
+		Stderr:   io.err,
+		OnStart:  spinner.Stop,
+	})
+	spinner.Stop()
+	if err != nil {
+		return fail(io.err, err)
+	}
+	return 0
+}
+
+func runExternalChat(cfg config.Config, options *runOptions, io streams) int {
+	reader := bufio.NewReader(io.in)
+	displayName := externalcli.DisplayName(cfg.Provider.CLI)
+	ui.Banner(io.err, displayName, "lean external handoff · existing CLI login")
+	_, _ = fmt.Fprintln(io.err, "Each prompt is delegated directly. Type /help or /exit.")
+	for {
+		_, _ = fmt.Fprint(io.err, "ycode › ")
+		line, readErr := reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if readErr != nil && line == "" {
+			_, _ = fmt.Fprintln(io.err)
+			return 0
+		}
+		switch {
+		case line == "":
+			continue
+		case line == "/exit" || line == "/quit":
+			return 0
+		case line == "/help":
+			_, _ = fmt.Fprintln(io.err, "/map [query]  show YCode's bounded repository map")
+			_, _ = fmt.Fprintln(io.err, "/stats        explain external token accounting")
+			_, _ = fmt.Fprintln(io.err, "/exit         leave YCode")
+			continue
+		case line == "/stats":
+			_, _ = fmt.Fprintln(io.err, "Token accounting is owned by "+textsafe.Terminal(displayName)+"; YCode adds no repo map or tool schemas.")
+			continue
+		case strings.HasPrefix(line, "/map"):
+			query := strings.TrimSpace(strings.TrimPrefix(line, "/map"))
+			snapshot, mapErr := repo.Build(options.root, query, options.mapTokens)
+			if mapErr != nil {
+				_, _ = fmt.Fprintln(io.err, "error: "+mapErr.Error())
+			} else {
+				_, _ = fmt.Fprintln(io.out, textsafe.Terminal(snapshot.Text))
+			}
+			continue
+		case strings.HasPrefix(line, "/"):
+			_, _ = fmt.Fprintln(io.err, "unknown command; try /help")
+			continue
+		}
+		if exit := runExternalPrompt(context.Background(), cfg, options, line, io); exit != 0 {
+			_, _ = fmt.Fprintln(io.err, "The external CLI stopped; you can fix its login/config and try another prompt.")
+		}
+	}
 }
 
 func runMap(args []string, io streams) int {
@@ -526,6 +655,8 @@ Usage:
   ycode chat [flags]                 interactive agent
   ycode map [flags] [query]          preview query-ranked context
   ycode benchmark [flags] [query]    measure repository-context reduction
+  ycode setup                        guided first-run connection setup
+  ycode connect cli NAME             use Codex, Claude Code, or OpenCode
   ycode connect local [flags]        detect and save a local model runtime
   ycode connect api [flags]          save a hosted API connection
   ycode connect status               show the effective model connection
@@ -536,7 +667,8 @@ Usage:
 
 Common agent flags:
   --root PATH              workspace root
-  --connection MODE        api or local
+  --connection MODE        api, local, or cli
+  --cli NAME               codex, claude, or opencode
   --model ID               provider model
   --base-url URL           OpenAI-compatible API base
   --budget TOKENS          per-call input budget

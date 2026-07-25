@@ -93,6 +93,44 @@ func TestLocalConnectionRejectsNonLoopbackURL(t *testing.T) {
 	}
 }
 
+func TestCLIConnectionNeverResolvesOrStoresAPIKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("YCODE_CONFIG_DIR", dir)
+	t.Setenv("YCODE_API_KEY", "must-not-be-used-or-written")
+	t.Setenv("OPENAI_API_KEY", "also-must-not-be-used")
+
+	path, err := WriteGlobalCLI("claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.Connection != "cli" || cfg.Provider.CLI != "claude" {
+		t.Fatalf("unexpected CLI config: %+v", cfg.Provider)
+	}
+	if key := cfg.APIKey(); key != "" {
+		t.Fatalf("CLI API key = %q", key)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(string(data), "must-not-be-used-or-written") {
+		t.Fatal("CLI config leaked an API key")
+	}
+}
+
+func TestCLIConnectionRequiresSupportedName(t *testing.T) {
+	cfg := Default()
+	cfg.Provider.Connection = "cli"
+	cfg.Provider.CLI = "anything"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unsupported CLI to fail")
+	}
+}
+
 func TestWriteGlobalConnectionPreservesAgentSettings(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("YCODE_CONFIG_DIR", dir)
