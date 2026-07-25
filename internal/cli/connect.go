@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,7 +14,9 @@ import (
 	"time"
 
 	"github.com/yuzu-ux/ycode/internal/config"
+	"github.com/yuzu-ux/ycode/internal/externalcli"
 	"github.com/yuzu-ux/ycode/internal/textsafe"
+	"github.com/yuzu-ux/ycode/internal/ui"
 )
 
 type localEndpoint struct {
@@ -35,6 +38,8 @@ func runConnect(args []string, io streams) int {
 	switch args[0] {
 	case "local":
 		return runConnectLocal(args[1:], io)
+	case "cli", "external":
+		return runConnectCLI(args[1:], io)
 	case "api":
 		return runConnectAPI(args[1:], io)
 	case "status":
@@ -43,11 +48,15 @@ func runConnect(args []string, io streams) int {
 		printConnectHelp(io.out)
 		return 0
 	default:
-		return fail(io.err, fmt.Errorf("unknown connect target %q; use local, api, or status", args[0]))
+		return fail(io.err, fmt.Errorf("unknown connect target %q; use cli, local, api, or status", args[0]))
 	}
 }
 
 func runConnectLocal(args []string, io streams) int {
+	return runConnectLocalMode(args, io, ui.InteractiveReader(io.in))
+}
+
+func runConnectLocalMode(args []string, io streams, forcePrompt bool) int {
 	flags := flag.NewFlagSet("ycode connect local", flag.ContinueOnError)
 	flags.SetOutput(io.err)
 	runtimeName := flags.String("runtime", "auto", "auto, ollama, lm-studio, or llama.cpp")
@@ -73,6 +82,9 @@ func runConnectLocal(args []string, io streams) int {
 		return fail(io.err, err)
 	}
 	selected, err := selectLocalModel(models, *model)
+	if err != nil && strings.TrimSpace(*model) == "" && forcePrompt {
+		selected, err = promptLocalModel(models, io)
+	}
 	if err != nil {
 		return fail(io.err, err)
 	}
@@ -88,6 +100,61 @@ func runConnectLocal(args []string, io streams) int {
 	_, _ = fmt.Fprintln(io.out, "✓ API key           disabled for this local connection")
 	_, _ = fmt.Fprintln(io.out, "\nRun `ycode` to start chatting with the local model.")
 	return 0
+}
+
+func runConnectCLI(args []string, io streams) int {
+	flags := flag.NewFlagSet("ycode connect cli", flag.ContinueOnError)
+	flags.SetOutput(io.err)
+	list := flags.Bool("list", false, "list supported external coding CLIs")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *list || len(flags.Args()) == 0 {
+		printExternalCLIStatuses(io.out)
+		if *list {
+			return 0
+		}
+		_, _ = fmt.Fprintln(io.err, "\nChoose one: ycode connect cli codex|claude|opencode")
+		return 2
+	}
+	if len(flags.Args()) != 1 {
+		return fail(io.err, errors.New("connect cli accepts exactly one CLI name"))
+	}
+
+	status, err := externalcli.Resolve(flags.Args()[0])
+	if err != nil {
+		return fail(io.err, err)
+	}
+	path, err := config.WriteGlobalCLI(status.Name)
+	if err != nil {
+		return fail(io.err, err)
+	}
+	_, _ = fmt.Fprintln(io.out, "✓ connection        external coding CLI")
+	_, _ = fmt.Fprintln(io.out, "✓ CLI               "+textsafe.Terminal(status.DisplayName))
+	_, _ = fmt.Fprintln(io.out, "✓ executable        "+textsafe.Terminal(status.Path))
+	_, _ = fmt.Fprintln(io.out, "✓ saved             "+textsafe.Terminal(path))
+	_, _ = fmt.Fprintln(io.out, "✓ credentials       owned by the external CLI; none stored by YCode")
+	_, _ = fmt.Fprintln(io.out, "\nRun `ycode` or `ycode \"your task\"` to delegate through it.")
+	return 0
+}
+
+func printExternalCLIStatuses(writer io.Writer) {
+	_, _ = fmt.Fprintln(writer, "External coding CLIs:")
+	for _, status := range externalcli.Statuses() {
+		detail := "not found on PATH"
+		marker := "○"
+		if status.Installed {
+			detail = status.Path
+			marker = "✓"
+		}
+		_, _ = fmt.Fprintf(
+			writer,
+			"  %s %-12s %s\n",
+			marker,
+			textsafe.Terminal(status.DisplayName),
+			textsafe.Terminal(detail),
+		)
+	}
 }
 
 func runConnectAPI(args []string, io streams) int {
@@ -150,6 +217,16 @@ func runConnectStatus(args []string, io streams) int {
 		return fail(io.err, err)
 	}
 	_, _ = fmt.Fprintln(io.out, "connection  "+textsafe.Terminal(cfg.Provider.Connection))
+	if cfg.Provider.Connection == "cli" {
+		_, _ = fmt.Fprintln(io.out, "CLI         "+textsafe.Terminal(externalcli.DisplayName(cfg.Provider.CLI)))
+		if status, resolveErr := externalcli.Resolve(cfg.Provider.CLI); resolveErr != nil {
+			_, _ = fmt.Fprintln(io.out, "executable  not found on PATH")
+		} else {
+			_, _ = fmt.Fprintln(io.out, "executable  "+textsafe.Terminal(status.Path))
+		}
+		_, _ = fmt.Fprintln(io.out, "API key     not used by YCode")
+		return 0
+	}
 	_, _ = fmt.Fprintln(io.out, "endpoint    "+textsafe.Terminal(cfg.Provider.BaseURL))
 	_, _ = fmt.Fprintln(io.out, "model       "+textsafe.Terminal(cfg.Provider.Model))
 	if cfg.Provider.Connection == "local" {
@@ -160,6 +237,34 @@ func runConnectStatus(args []string, io streams) int {
 		_, _ = fmt.Fprintln(io.out, "API key     found (value hidden)")
 	}
 	return 0
+}
+
+func promptLocalModel(models []string, io streams) (string, error) {
+	var choices []string
+	for _, model := range models {
+		if localModelScore(model) < 100 {
+			choices = append(choices, model)
+		}
+	}
+	if len(choices) == 0 {
+		return "", errors.New("no local chat models are available")
+	}
+	_, _ = fmt.Fprintln(io.err, "\nChoose a local model (nothing will be loaded until you send a prompt):")
+	for index, model := range choices {
+		_, _ = fmt.Fprintf(io.err, "  %d. %s\n", index+1, textsafe.Terminal(model))
+	}
+	_, _ = fmt.Fprint(io.err, "Model: ")
+	line, err := bufio.NewReader(io.in).ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		return "", errors.New("model selection cancelled")
+	}
+	answer := strings.TrimSpace(line)
+	for index, model := range choices {
+		if answer == fmt.Sprint(index+1) || answer == model {
+			return model, nil
+		}
+	}
+	return "", fmt.Errorf("invalid model choice %q", answer)
 }
 
 func localConnectionCandidates(runtimeName, customBaseURL string) ([]localEndpoint, error) {
@@ -364,6 +469,8 @@ func localModelScore(model string) int {
 
 func printConnectHelp(writer io.Writer) {
 	_, _ = fmt.Fprint(writer, `Usage:
+  ycode connect cli NAME        use Codex, Claude Code, or OpenCode
+  ycode connect cli --list      show installed external coding CLIs
   ycode connect local [flags]   detect and save a local model runtime
   ycode connect api [flags]     save a hosted API connection
   ycode connect status          show the effective connection

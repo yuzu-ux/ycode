@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 
@@ -209,5 +210,141 @@ func TestSelectLocalModelRequiresChoiceWhenAmbiguous(t *testing.T) {
 	_, err := selectLocalModel([]string{"general-a", "general-b"}, "")
 	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("--model")) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInteractiveLocalConnectionPromptsInsteadOfGuessing(t *testing.T) {
+	t.Setenv("YCODE_CONFIG_DIR", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/models" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(writer, `{"data":[{"id":"general-a"},{"id":"general-b"}]}`)
+	}))
+	defer server.Close()
+
+	var output bytes.Buffer
+	exit := runConnectLocalMode(
+		[]string{"--base-url", server.URL, "--timeout", "1s"},
+		streams{in: bytes.NewBufferString("2\n"), out: &output, err: &output},
+		true,
+	)
+	if exit != 0 {
+		t.Fatalf("exit=%d output=%s", exit, output.String())
+	}
+	cfg, _, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.Model != "general-b" {
+		t.Fatalf("selected model = %q", cfg.Provider.Model)
+	}
+	if !bytes.Contains(output.Bytes(), []byte("nothing will be loaded")) {
+		t.Fatalf("output = %s", output.String())
+	}
+}
+
+func TestMissingAPIKeyPointsToGuidedSetup(t *testing.T) {
+	t.Setenv("YCODE_CONFIG_DIR", t.TempDir())
+	t.Setenv("YCODE_CACHE_DIR", t.TempDir())
+	t.Setenv("YCODE_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+
+	var output bytes.Buffer
+	exit := Run(
+		[]string{"run", "--root", t.TempDir(), "inspect"},
+		bytes.NewReader(nil),
+		&output,
+		&output,
+		"test",
+	)
+	if exit == 0 {
+		t.Fatal("expected missing connection to fail")
+	}
+	if !bytes.Contains(output.Bytes(), []byte("ycode setup")) ||
+		!bytes.Contains(output.Bytes(), []byte("Codex")) ||
+		!bytes.Contains(output.Bytes(), []byte("local model")) {
+		t.Fatalf("output = %s", output.String())
+	}
+}
+
+func TestSetupAcceptsNamedHostedAPIChoice(t *testing.T) {
+	t.Setenv("YCODE_CONFIG_DIR", t.TempDir())
+	t.Setenv("YCODE_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+
+	var output bytes.Buffer
+	exit := Run([]string{"setup"}, bytes.NewBufferString("api\n"), &output, &output, "test")
+	if exit != 0 {
+		t.Fatalf("exit=%d output=%s", exit, output.String())
+	}
+	cfg, _, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.Connection != "api" {
+		t.Fatalf("connection = %q", cfg.Provider.Connection)
+	}
+	if !bytes.Contains(output.Bytes(), []byte("No model is started during discovery")) {
+		t.Fatalf("output = %s", output.String())
+	}
+}
+
+func TestExternalCLIConnectionAndDelegation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	binDir := t.TempDir()
+	fakeCodex := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\"\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	configDir := t.TempDir()
+	t.Setenv("YCODE_CONFIG_DIR", configDir)
+	t.Setenv("YCODE_CACHE_DIR", t.TempDir())
+	t.Setenv("YCODE_API_KEY", "must-not-be-written")
+
+	var connectOutput bytes.Buffer
+	exit := Run(
+		[]string{"connect", "cli", "codex"},
+		bytes.NewReader(nil),
+		&connectOutput,
+		&connectOutput,
+		"test",
+	)
+	if exit != 0 {
+		t.Fatalf("connect exit=%d output=%s", exit, connectOutput.String())
+	}
+	if !bytes.Contains(connectOutput.Bytes(), []byte("existing")) &&
+		!bytes.Contains(connectOutput.Bytes(), []byte("none stored")) {
+		t.Fatalf("connect output = %s", connectOutput.String())
+	}
+
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	exit = Run(
+		[]string{"run", "--root", root, "--read-only", "inspect; do not execute this as shell"},
+		bytes.NewReader(nil),
+		&stdout,
+		&stderr,
+		"test",
+	)
+	if exit != 0 {
+		t.Fatalf("run exit=%d stderr=%s", exit, stderr.String())
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte("read-only")) ||
+		!bytes.Contains(stdout.Bytes(), []byte("inspect; do not execute this as shell")) {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("must-not-be-written")) {
+		t.Fatal("external CLI connection leaked a key")
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yuzu-ux/ycode/internal/config"
+	"github.com/yuzu-ux/ycode/internal/externalcli"
 	"github.com/yuzu-ux/ycode/internal/textsafe"
 )
 
@@ -53,18 +54,30 @@ func runDoctor(args []string, io streams) int {
 	}
 
 	doctorLine(io.out, true, "connection", cfg.Provider.Connection)
-	doctorLine(io.out, true, "provider", cfg.Provider.BaseURL)
-	doctorLine(io.out, true, "model", cfg.Provider.Model)
+	if cfg.Provider.Connection == "cli" {
+		status, resolveErr := externalcli.Resolve(cfg.Provider.CLI)
+		if resolveErr != nil {
+			failures += doctorLine(io.out, false, "external CLI", resolveErr.Error())
+		} else {
+			doctorLine(io.out, true, "external CLI", status.DisplayName+" at "+status.Path)
+		}
+		doctorLine(io.out, true, "API key", "not used by YCode for CLI delegation")
+	} else {
+		doctorLine(io.out, true, "provider", cfg.Provider.BaseURL)
+		doctorLine(io.out, true, "model", cfg.Provider.Model)
+	}
 	if cfg.Provider.Connection == "local" {
 		doctorLine(io.out, true, "API key", "disabled for local connection")
-	} else if cfg.APIKey() == "" && requiresKey(cfg.Provider.BaseURL) {
-		failures += doctorLine(io.out, false, "API key", "set YCODE_API_KEY or "+cfg.Provider.APIKeyEnv)
-	} else if cfg.APIKey() != "" && !secureForCredential(cfg.Provider.BaseURL) {
-		failures += doctorLine(io.out, false, "API transport", "refusing credential over non-loopback HTTP")
-	} else if cfg.APIKey() == "" {
-		doctorLine(io.out, true, "API key", "not required for loopback provider")
-	} else {
-		doctorLine(io.out, true, "API key", "found (value hidden)")
+	} else if cfg.Provider.Connection == "api" {
+		if cfg.APIKey() == "" && requiresKey(cfg.Provider.BaseURL) {
+			failures += doctorLine(io.out, false, "API key", "run `ycode setup` or set YCODE_API_KEY / "+cfg.Provider.APIKeyEnv)
+		} else if cfg.APIKey() != "" && !secureForCredential(cfg.Provider.BaseURL) {
+			failures += doctorLine(io.out, false, "API transport", "refusing credential over non-loopback HTTP")
+		} else if cfg.APIKey() == "" {
+			doctorLine(io.out, true, "API key", "not required for loopback provider")
+		} else {
+			doctorLine(io.out, true, "API key", "found (value hidden)")
+		}
 	}
 	if sources.Global != "" {
 		doctorLine(io.out, true, "global config", presentOrMissing(sources.Global))
@@ -75,7 +88,9 @@ func runDoctor(args []string, io streams) int {
 	doctorLine(io.out, true, "token budget", fmt.Sprintf("%d input / %d map / %d tool output", cfg.Agent.InputBudgetTokens, cfg.Agent.RepoMapTokens, cfg.Agent.ToolOutputTokens))
 
 	if *network {
-		if err := probeProvider(cfg); err != nil {
+		if cfg.Provider.Connection == "cli" {
+			doctorLine(io.out, true, "network", "owned by external CLI; no model request sent")
+		} else if err := probeProvider(cfg); err != nil {
 			failures += doctorLine(io.out, false, "provider network", err.Error())
 		} else {
 			doctorLine(io.out, true, "provider network", "/models responded successfully")

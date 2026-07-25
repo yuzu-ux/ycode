@@ -33,6 +33,19 @@ type fakeTools struct {
 	calls int
 }
 
+type fakeStatus struct {
+	starts []string
+	stops  int
+}
+
+func (status *fakeStatus) Start(label string) {
+	status.starts = append(status.starts, label)
+}
+
+func (status *fakeStatus) Stop() {
+	status.stops++
+}
+
 func (f *fakeTools) Specs() []provider.ToolSpec {
 	return []provider.ToolSpec{{Type: "function", Function: provider.FunctionSpec{Name: "workspace"}}}
 }
@@ -49,6 +62,7 @@ func TestAgentRunsToolLoop(t *testing.T) {
 	}
 	script := &scriptedProvider{}
 	toolset := &fakeTools{}
+	status := &fakeStatus{}
 	var output bytes.Buffer
 	runner, err := New(Options{
 		Root:             root,
@@ -62,6 +76,7 @@ func TestAgentRunsToolLoop(t *testing.T) {
 		Tools:            toolset,
 		State:            &session.State{ID: "test-session", Root: root},
 		Stdout:           &output,
+		Status:           status,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -84,5 +99,8 @@ func TestAgentRunsToolLoop(t *testing.T) {
 	}
 	if output.String() != "finished\n" {
 		t.Fatalf("output = %q", output.String())
+	}
+	if len(status.starts) != 3 || status.starts[0] != "Mapping workspace" || status.stops != 3 {
+		t.Fatalf("status starts=%v stops=%d", status.starts, status.stops)
 	}
 }

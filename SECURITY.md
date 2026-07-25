@@ -70,8 +70,10 @@ Tool output or model responses can still contain a secret that was present in a
 source file or command. Review the session cache and terminal output according
 to your project's data policy.
 
-Model text is stripped of terminal control characters before display so a
-response cannot activate ANSI/OSC control sequences.
+Model text from YCode's own provider loop is stripped of terminal control
+characters before display so a response cannot activate ANSI/OSC control
+sequences. External CLI connections render that CLI's output directly and rely
+on its terminal-safety behavior.
 
 ## Session data
 
@@ -91,3 +93,17 @@ an API key. Local discovery is opt-in through `ycode connect local` and performs
 only `GET /v1/models` requests against known loopback ports. The selected local
 runtime still receives model context, but that traffic does not leave the
 machine through YCode.
+
+`cli` connection mode stores only an allowlisted executable identifier:
+`codex`, `claude`, or `opencode`. YCode resolves it on PATH and launches it
+directly with an argv array; prompts are never interpolated into a shell
+command. The external CLI owns its login data, and YCode does not copy that
+credential material into configuration or sessions. Credential-like environment
+variables are removed from the child process, so these adapters expect the CLI
+to have its own saved login.
+
+An external coding CLI has its own tools and permission model. A normal YCode
+run selects that CLI's non-interactive editing mode; `--read-only` selects its
+restricted mode. Review the external CLI's configuration before using it in an
+untrusted repository. OpenCode auto mode still honors explicit deny rules but
+automatically approves actions that would otherwise ask.
