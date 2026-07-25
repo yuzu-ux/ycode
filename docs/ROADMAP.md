@@ -18,9 +18,10 @@ latency, token cost, and auditable execution.
 
 ## v0.2 — compatibility and precision
 
+- [x] keyless local connection and model discovery
 - [ ] Responses API transport
 - [ ] native Anthropic and Gemini transports
-- [ ] provider capability discovery
+- [ ] hosted provider capability discovery
 - [ ] optional exact tokenizers with estimate calibration
 - [ ] unified-diff preview before writes
 - [ ] configurable approval rules per command family

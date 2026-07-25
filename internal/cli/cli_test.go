@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+
+	"github.com/yuzu-ux/ycode/internal/config"
 )
 
 func TestRunEndToEndAgainstCompatibleServer(t *testing.T) {
@@ -78,5 +80,134 @@ func TestCredentialTransportSafety(t *testing.T) {
 	}
 	if !secureForCredential("http://127.0.0.1:11434/v1") {
 		t.Fatal("loopback HTTP should be credential-safe")
+	}
+}
+
+func TestConnectLocalPersistsAndRunsWithoutAPIKey(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("YCODE_CONFIG_DIR", t.TempDir())
+	t.Setenv("YCODE_CACHE_DIR", t.TempDir())
+	t.Setenv("YCODE_API_KEY", "must-not-be-sent")
+	t.Setenv("OPENAI_API_KEY", "also-must-not-be-sent")
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if authorization := request.Header.Get("Authorization"); authorization != "" {
+			t.Errorf("local request sent authorization header %q", authorization)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/v1/models":
+			_, _ = fmt.Fprint(writer, `{"data":[{"id":"text-embedding"},{"id":"general-model"},{"id":"fast-coder"}]}`)
+		case "/v1/chat/completions":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if body["model"] != "fast-coder" {
+				t.Errorf("model = %v", body["model"])
+			}
+			_, _ = fmt.Fprint(writer, `{"choices":[{"message":{"content":"local response"}}]}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	var connectOut, connectErr bytes.Buffer
+	exit := Run([]string{
+		"connect", "local",
+		"--base-url", server.URL,
+		"--timeout", "1s",
+	}, bytes.NewReader(nil), &connectOut, &connectErr, "test")
+	if exit != 0 {
+		t.Fatalf("connect exit=%d stderr=%s", exit, connectErr.String())
+	}
+	if !bytes.Contains(connectOut.Bytes(), []byte("fast-coder")) ||
+		!bytes.Contains(connectOut.Bytes(), []byte("API key           disabled")) {
+		t.Fatalf("connect output = %s", connectOut.String())
+	}
+
+	cfg, _, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.Connection != "local" ||
+		cfg.Provider.BaseURL != server.URL+"/v1" ||
+		cfg.Provider.Model != "fast-coder" ||
+		cfg.APIKey() != "" {
+		t.Fatalf("unexpected local config: %+v", cfg.Provider)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exit = Run([]string{
+		"run",
+		"--root", root,
+		"--stream=false",
+		"answer locally",
+	}, bytes.NewReader(nil), &stdout, &stderr, "test")
+	if exit != 0 {
+		t.Fatalf("run exit=%d stderr=%s", exit, stderr.String())
+	}
+	if stdout.String() != "local response\n" {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestConnectLocalRejectsRemoteEndpoint(t *testing.T) {
+	t.Setenv("YCODE_CONFIG_DIR", t.TempDir())
+	var output bytes.Buffer
+	exit := Run([]string{
+		"connect", "local",
+		"--base-url", "https://example.com/v1",
+	}, bytes.NewReader(nil), &output, &output, "test")
+	if exit == 0 {
+		t.Fatal("expected remote endpoint to be rejected")
+	}
+	if !bytes.Contains(output.Bytes(), []byte("must use loopback")) {
+		t.Fatalf("output = %s", output.String())
+	}
+}
+
+func TestConnectAPIPersistsOnlyKeyName(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("YCODE_CONFIG_DIR", configDir)
+	t.Setenv("YCODE_API_KEY", "must-not-be-written")
+
+	var output bytes.Buffer
+	exit := Run([]string{
+		"connect", "api",
+		"--base-url", "https://provider.example/v1",
+		"--model", "hosted-model",
+		"--api-key-env", "PROVIDER_API_KEY",
+	}, bytes.NewReader(nil), &output, &output, "test")
+	if exit != 0 {
+		t.Fatalf("exit=%d output=%s", exit, output.String())
+	}
+	cfg, _, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.Connection != "api" ||
+		cfg.Provider.BaseURL != "https://provider.example/v1" ||
+		cfg.Provider.Model != "hosted-model" ||
+		cfg.Provider.APIKeyEnv != "PROVIDER_API_KEY" {
+		t.Fatalf("unexpected API config: %+v", cfg.Provider)
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("must-not-be-written")) {
+		t.Fatal("saved API connection leaked key value")
+	}
+}
+
+func TestSelectLocalModelRequiresChoiceWhenAmbiguous(t *testing.T) {
+	_, err := selectLocalModel([]string{"general-a", "general-b"}, "")
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("--model")) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

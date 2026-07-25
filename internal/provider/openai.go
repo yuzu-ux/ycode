@@ -84,10 +84,15 @@ func NewClient(baseURL, apiKey string, timeout time.Duration) *Client {
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		APIKey:  apiKey,
 		HTTPClient: &http.Client{
-			Timeout: timeout,
+			Timeout:       timeout,
+			CheckRedirect: noRedirect,
 		},
 		UserAgent: "ycode/0.1",
 	}
+}
+
+func noRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 type wireRequest struct {

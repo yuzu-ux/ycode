@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -87,6 +88,27 @@ func TestCompleteSurfacesHTTPError(t *testing.T) {
 	_, err := client.Complete(context.Background(), Request{Model: "bad"})
 	if err == nil || !strings.Contains(err.Error(), "bad model") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCompleteDoesNotFollowRedirect(t *testing.T) {
+	var targetHit atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetHit.Store(true)
+	}))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer redirect.Close()
+
+	client := NewClient(redirect.URL, "must-not-be-forwarded", time.Second)
+	_, err := client.Complete(context.Background(), Request{Model: "test"})
+	if err == nil || !strings.Contains(err.Error(), "307") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if targetHit.Load() {
+		t.Fatal("provider followed redirect")
 	}
 }
 

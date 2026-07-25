@@ -44,8 +44,8 @@ agent loop.
 
 ## Provider contract
 
-The v0.1 provider uses the broadly supported
-`POST /v1/chat/completions` contract:
+The current provider uses the broadly supported `POST /v1/chat/completions`
+contract:
 
 - JSON messages
 - function tool definitions
@@ -54,8 +54,18 @@ The v0.1 provider uses the broadly supported
 - streaming, fragmented `delta.tool_calls`
 - optional provider usage accounting
 
-An empty API key is permitted only for loopback endpoints. Hosted endpoints
-require `YCODE_API_KEY` or the configured provider environment variable.
+The provider has two explicit connection modes:
+
+- `local` requires a loopback endpoint and suppresses API keys even when a key
+  exists in the environment.
+- `api` supports hosted HTTPS endpoints and requires `YCODE_API_KEY` or the
+  configured provider environment variable when the endpoint is not loopback.
+
+`ycode connect local` discovers models through `GET /v1/models` on known local
+runtime ports, then stores only the connection mode, endpoint, and model ID.
+Discovery is on demand: it adds no background process, regular-startup work,
+resident memory, or model-request tokens. `ycode connect api` switches the
+saved mode without storing an API key value.
 
 ## Editing contract
 
@@ -80,7 +90,7 @@ The path hash prevents accidental cross-project resume. Session IDs contain a
 UTC timestamp plus cryptographic random bytes. API keys are not part of session
 state.
 
-## Deliberate non-goals for v0.1
+## Deliberate non-goals before 1.0
 
 - daemon/server architecture
 - multi-agent scheduling

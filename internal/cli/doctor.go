@@ -52,9 +52,12 @@ func runDoctor(args []string, io streams) int {
 		doctorLine(io.out, true, "search", "rg available at "+path)
 	}
 
+	doctorLine(io.out, true, "connection", cfg.Provider.Connection)
 	doctorLine(io.out, true, "provider", cfg.Provider.BaseURL)
 	doctorLine(io.out, true, "model", cfg.Provider.Model)
-	if cfg.APIKey() == "" && requiresKey(cfg.Provider.BaseURL) {
+	if cfg.Provider.Connection == "local" {
+		doctorLine(io.out, true, "API key", "disabled for local connection")
+	} else if cfg.APIKey() == "" && requiresKey(cfg.Provider.BaseURL) {
 		failures += doctorLine(io.out, false, "API key", "set YCODE_API_KEY or "+cfg.Provider.APIKeyEnv)
 	} else if cfg.APIKey() != "" && !secureForCredential(cfg.Provider.BaseURL) {
 		failures += doctorLine(io.out, false, "API transport", "refusing credential over non-loopback HTTP")
@@ -112,7 +115,12 @@ func probeProvider(cfg config.Config) error {
 	if key := cfg.APIKey(); key != "" {
 		request.Header.Set("Authorization", "Bearer "+key)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return err
